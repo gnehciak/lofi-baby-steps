@@ -2998,7 +2998,7 @@ function App() {
             <details className="teacher" open={false}>
               <summary>
                 <span>
-                  <span className="sub" style={{display: 'block', marginBottom: 6}}>Appendix · for the marker</span>
+                  <span className="sub" style={{display: 'block', marginBottom: 6}}>Appendix</span>
                   Teacher notes &amp; rationale
                 </span>
                 <span className="marker"></span>
@@ -3029,22 +3029,6 @@ function App() {
                   <li><strong>Extension cards:</strong> bassline, "drop" structure, sound design — extending Pass-level activity into Distinction-level work.</li>
                 </ul>
 
-                <h3>NESA Music Yrs 7–10 syllabus links</h3>
-                <ul>
-                  <li><strong>4.4</strong> demonstrates an understanding of musical concepts through exploring, experimenting, improvising, organising, arranging and composing.</li>
-                  <li><strong>4.5</strong> notates compositions using traditional and/or non-traditional notation.</li>
-                  <li><strong>4.6</strong> experiments with different forms of technology in the composition process.</li>
-                  <li><strong>4.7</strong> demonstrates understanding through listening, observing, responding, discriminating, analysing.</li>
-                  <li><strong>4.10</strong> identifies the use of technology in the music selected for study.</li>
-                  <li><strong>4.12</strong> demonstrates a developing confidence and willingness to engage in performance, composition, listening and discussion.</li>
-                </ul>
-
-                <ul className="refs">
-                  <li>Humberstone, J. H. B. (2015). Defining creativity for a more pluralist approach to music education. <em>ASME XXth National Conference 2015</em>, 56–63.</li>
-                  <li>Humberstone, J. H. B. (2017). A Pluralist Approach to Music Education. In <em>The Oxford Handbook of Technology and Music Education</em> (pp. 421–430). Oxford University Press.</li>
-                  <li>Humberstone, J. H. B. (2023). Battle Dances and 808s: Teaching music creation in Australia. <em>The Routledge Companion to Teaching Music Composition in Schools</em> (pp. 9–25).</li>
-                  <li>NSW Education Standards Authority. (2003, amended 2018). <em>Music Years 7–10 Syllabus</em>. NESA.</li>
-                </ul>
               </div>
             </details>
           </div>
@@ -3144,37 +3128,10 @@ function Footer() {
         <div className="big">Now go make<br/><em>your version</em>.</div>
         <div className="row">
           <div>
-            <h5>Colophon</h5>
             <p>Set in <strong>Fraunces</strong> (display) and <strong>Inter</strong> (body), with <strong>JetBrains Mono</strong> for technical labels.</p>
             <p>Audio engine — Tone.js. Source code on GitHub. Designed and written by Kevin Li, 2026.</p>
-            <div className="credit">© 2026 KEVIN LI · ALL RIGHTS RESERVED</div>
-          </div>
-          <div>
-            <h5>Sections</h5>
-            <p style={{lineHeight: 2}}>
-              <a href="#whatis" style={{color: 'var(--ink-2)', display: 'block'}}>Field guide</a>
-              <a href="#step1" style={{color: 'var(--ink-2)', display: 'block'}}>01 · Tempo</a>
-              <a href="#step2" style={{color: 'var(--ink-2)', display: 'block'}}>02 · Chords</a>
-              <a href="#step3" style={{color: 'var(--ink-2)', display: 'block'}}>03 · Beat</a>
-              <a href="#step4" style={{color: 'var(--ink-2)', display: 'block'}}>04 · Melody</a>
-            </p>
-          </div>
-          <div>
-            <h5>Tools</h5>
-            <p style={{lineHeight: 2}}>
-              <span style={{display: 'block'}}>BandLab — DAW</span>
-              <span style={{display: 'block'}}>Tone.js — synthesis</span>
-              <span style={{display: 'block'}}>Web MIDI export</span>
-            </p>
-          </div>
-          <div>
-            <h5>Listen further</h5>
-            <p style={{lineHeight: 2}}>
-              <span style={{display: 'block'}}>J Dilla — Donuts</span>
-              <span style={{display: 'block'}}>Nujabes — Modal Soul</span>
-              <span style={{display: 'block'}}>Lofi Girl radio</span>
-              <span style={{display: 'block'}}>Idealism</span>
-            </p>
+            <p>Website developed with Claude Code.</p>
+            <div className="credit">© 2026 KEVIN LI</div>
           </div>
         </div>
       </div>
