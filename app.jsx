@@ -1342,22 +1342,28 @@ function MelodyStep({ melody, setMelody, playing, setPlaying, currentStep, bpm }
 // ===========================================================
 //  STEP 5 — BASSLINE
 // ===========================================================
-// 1 octave (C2 → C3) for the bass piano roll. Top-to-bottom = high-to-low,
+// 2 octaves (C1 → C3) for the bass piano roll. Top-to-bottom = high-to-low,
 // matching how a real piano roll lays out — high pitches on top.
 const BASS_PITCHES = (() => {
   const semis = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
   const out = ['C3'];
   for (let i = 11; i >= 0; i--) out.push(semis[i] + '2');
+  for (let i = 11; i >= 0; i--) out.push(semis[i] + '1');
   return out;
 })();
 const BASS_BEATS = 16; // 4 bars × 4 beats (crotchets)
 
 // Default bassline: each chord's root, one semibreve per bar on the downbeat.
-// The user can move the start beat within a bar but every bar is still one note.
+// Octaves alternate low/high (bar 1,3 → octave 1; bar 2,4 → octave 2) for a
+// classic lo-fi register bounce. The user can move the start beat within a
+// bar but every bar is still one note.
 function defaultBassFor(progIdx) {
   const roots = PROGS[progIdx].notes.map(c => c[0].replace(/\d/g, ''));
   const out = Array(BASS_BEATS).fill(null);
-  for (let bar = 0; bar < 4; bar++) out[bar * 4] = roots[bar] + '2';
+  for (let bar = 0; bar < 4; bar++) {
+    const oct = bar % 2 === 0 ? '1' : '2';
+    out[bar * 4] = roots[bar] + oct;
+  }
   return out;
 }
 
@@ -1403,12 +1409,12 @@ function BassStep({ progIdx, bassNotes, setBassNotes, playing, setPlaying, curre
       <div className="step-body">
         <span className="eyebrow">Step 05<span className="dot"></span>Bassline</span>
         <h2>Drop the <em><span className="underline-hand">low end</span></em>.</h2>
-        <p className="lede"><strong>One octave, one note per bar.</strong> The piano roll below covers a single octave — <strong>C2 to C3</strong> — so you can't accidentally wander out of bass register. Each bar holds one semibreve; click any cell to set that bar's note. The four indigo notes pre-drawn are the chord roots for <strong>{prog.name}</strong>; keep them, swap them out, or shift them sideways for syncopation.</p>
+        <p className="lede"><strong>Two octaves, one note per bar.</strong> The piano roll below covers <strong>C1 to C3</strong> — wide enough for a deep sub thump up to a punchy mid-bass — so you stay in bass register without feeling boxed in. Each bar holds one semibreve; click any cell to set that bar's note. The four indigo notes pre-drawn are the chord roots for <strong>{prog.name}</strong>; keep them, swap them out, or shift them sideways for syncopation.</p>
 
         <div className="roll-shell">
           <div className="roll-head">
             <div>
-              <div className="label">Piano roll · 1 octave · {prog.name}{isEdited ? ' · edited' : ''}</div>
+              <div className="label">Piano roll · 2 octaves · {prog.name}{isEdited ? ' · edited' : ''}</div>
               <div className="name">{noteCount} {noteCount === 1 ? 'note' : 'notes'} · 4 bars · click cells to edit</div>
             </div>
             <div className="controls">
@@ -1476,7 +1482,7 @@ function BassStep({ progIdx, bassNotes, setBassNotes, playing, setPlaying, curre
               <h5>In BandLab</h5>
               <span className="badge bl">Translate</span>
             </div>
-            <p>Add a track → pick a <strong>Sub Bass</strong> or <strong>808</strong> instrument. Hit <code>↓ MIDI</code> and drag onto it, or draw the same notes by hand: one semibreve per bar between <strong>C2</strong> and <strong>C3</strong>, starting at whichever beat you placed each cell.</p>
+            <p>Add a track → pick a <strong>Sub Bass</strong> or <strong>808</strong> instrument. Hit <code>↓ MIDI</code> and drag onto it, or draw the same notes by hand: one semibreve per bar between <strong>C1</strong> and <strong>C3</strong>, starting at whichever beat you placed each cell.</p>
           </div>
         </div>
       </div>
@@ -2325,7 +2331,7 @@ function ExportStudio({ pattern, chordNotes, melody, bassNotes, bpm, progName })
       tone: 'indigo',
       kicker: 'Stem 03',
       title: 'Bass',
-      blurb: '1 octave (C2 – C3) · piano roll',
+      blurb: '2 octaves (C1 – C3) · piano roll',
       meta: bassRoots ? `Bars · ${bassRoots}` : 'Place notes in step 05',
       icon: <BassIcon active={pulse === 'bass'} />,
     },
