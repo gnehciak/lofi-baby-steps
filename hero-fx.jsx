@@ -33,52 +33,62 @@ function HeroBackground() {
     const ro = new ResizeObserver(resize);
     ro.observe(canvas.parentElement);
 
-    // Color palette
-    const palette = [
-      { r: 240, g: 168, b: 56 },   // mustard
-      { r: 225, g: 90, b: 90 },    // rose
-      { r: 74, g: 184, b: 184 },   // cyan
-      { r: 138, g: 72, b: 120 },   // plum
-      { r: 95, g: 168, b: 107 },   // sage
-    ];
+    // Mono color — warm ink that multiplies nicely against the paper bg.
+    const INK = { r: 74, g: 54, b: 34 };
 
     // Spectrum bars — generated lazily so we resize cleanly
     const BAR_COUNT = 96;
-    const bars = Array.from({ length: BAR_COUNT }, (_, i) => {
-      // mix of frequencies per bar so they each have unique motion
-      const f1 = 0.6 + Math.random() * 1.4;
-      const f2 = 0.3 + Math.random() * 0.6;
-      const f3 = 1.5 + Math.random() * 1.5;
-      return {
-        i,
-        f1, f2, f3,
-        phase1: Math.random() * Math.PI * 2,
-        phase2: Math.random() * Math.PI * 2,
-        phase3: Math.random() * Math.PI * 2,
-        // colorMix biases this bar toward one of the palette colors
-        colorIdx: Math.floor(Math.random() * palette.length),
-        // current eased amplitude
-        amp: 0,
-        targetAmp: 0,
-      };
-    });
+    // Per-bar frequency response — typical 1/f music spectrum: bass loud
+    // on the left, falling toward treble on the right, with two gentle
+    // resonant bumps and a small high-end dip. Baked once.
+    const freqResp = (i) => {
+      const u = i / (BAR_COUNT - 1);
+      const tilt = Math.pow(1 - u * 0.82, 1.25);
+      const lowMid = Math.exp(-Math.pow((u - 0.18) / 0.10, 2)) * 0.20;
+      const mid    = Math.exp(-Math.pow((u - 0.46) / 0.14, 2)) * 0.10;
+      const dip    = Math.exp(-Math.pow((u - 0.86) / 0.08, 2)) * 0.12;
+      return Math.max(0.14, tilt + lowMid + mid - dip);
+    };
+    const bars = Array.from({ length: BAR_COUNT }, (_, i) => ({
+      i,
+      resp: freqResp(i),
+      // small per-bar wobble so neighbors aren't perfectly correlated
+      wobF:    0.6 + ((i * 0.733) % 1) * 1.4,
+      wobPh:   ((i * 1.618) % 1) * Math.PI * 2,
+      jitterF: 1.8 + ((i * 0.241) % 1) * 1.2,
+      jitterPh:((i * 2.111) % 1) * Math.PI * 2,
+      amp: 0,
+      targetAmp: 0,
+    }));
+
+    // Song-shape envelope — loops every ~60s (3600 frames @ 60fps).
+    // intro → build → verse → chorus → breakdown → re-build → climax → outro
+    const LOOP_FRAMES = 3600;
+    const songEnv = (frame) => {
+      const t = (frame % LOOP_FRAMES) / LOOP_FRAMES;
+      if (t < 0.08)      return 0.30 + t * 1.7;
+      else if (t < 0.22) return 0.44 + (t - 0.08) * 1.85;
+      else if (t < 0.40) return 0.70 + Math.sin((t - 0.22) * 24) * 0.05;
+      else if (t < 0.55) return 0.90 + Math.sin((t - 0.40) * 30) * 0.04;
+      else if (t < 0.65) return 0.90 - (t - 0.55) * 3.4;
+      else if (t < 0.72) return 0.56 + (t - 0.65) * 5.2;
+      else if (t < 0.92) return 0.95 + Math.sin((t - 0.72) * 26) * 0.04;
+      else               return 0.95 - (t - 0.92) * 8.5;
+    };
 
     // Particles — drifting upward, scatter on cursor
     const PARTICLES = 140;
-    const particles = Array.from({ length: PARTICLES }, () => {
-      const c = palette[Math.floor(Math.random() * palette.length)];
-      return {
-        x: Math.random() * 1200,
-        y: Math.random() * 800,
-        vx: (Math.random() - 0.5) * 0.2,
-        vy: -0.04 - Math.random() * 0.18,
-        size: 0.7 + Math.random() * 2.4,
-        alpha: 0.15 + Math.random() * 0.45,
-        color: c,
-        twinklePhase: Math.random() * Math.PI * 2,
-        twinkleSpeed: 0.001 + Math.random() * 0.003,
-      };
-    });
+    const particles = Array.from({ length: PARTICLES }, () => ({
+      x: Math.random() * 1200,
+      y: Math.random() * 800,
+      vx: (Math.random() - 0.5) * 0.2,
+      vy: -0.04 - Math.random() * 0.18,
+      size: 0.7 + Math.random() * 2.4,
+      alpha: 0.15 + Math.random() * 0.45,
+      color: INK,
+      twinklePhase: Math.random() * Math.PI * 2,
+      twinkleSpeed: 0.001 + Math.random() * 0.003,
+    }));
 
     // Dust grains (very subtle static-y flecks)
     const grains = Array.from({ length: 90 }, () => ({
@@ -106,17 +116,17 @@ function HeroBackground() {
       const baseY = H; // bars rise from bottom
       const maxBarH = H * 0.78;
 
+      // Shared song-energy this frame — every bar rises and falls with it.
+      const energy = songEnv(t);
+
       for (let i = 0; i < BAR_COUNT; i++) {
         const b = bars[i];
-        // intrinsic "music-like" breathing — three sines + slow drift
-        b.phase1 += 0.014 * b.f1;
-        b.phase2 += 0.008 * b.f2;
-        b.phase3 += 0.022 * b.f3;
-        const intrinsic =
-          0.34 +
-          0.18 * Math.sin(b.phase1) +
-          0.14 * Math.sin(b.phase2 + i * 0.21) +
-          0.10 * Math.sin(b.phase3 + i * 0.07);
+        // Spatial frequency response × song energy = the song's shape.
+        // Two small per-bar sines add organic life without breaking the
+        // overall envelope.
+        const wobble = 0.06 * Math.sin(t * 0.018 * b.wobF + b.wobPh);
+        const jitter = 0.03 * Math.sin(t * 0.045 * b.jitterF + b.jitterPh);
+        const intrinsic = b.resp * (energy + wobble) + jitter;
 
         // cursor influence — falls off with distance from bar center on x
         const cx = (i + 0.5) * barW;
@@ -150,20 +160,19 @@ function HeroBackground() {
         const h = Math.max(2, b.amp * maxBarH);
         const top = baseY - h;
 
-        // gradient per bar — top color brighter, bottom translucent
-        const c = palette[b.colorIdx];
+        // gradient — top brighter, bottom translucent. Mono ink.
         const intensity = Math.min(1, b.amp);
         const grad = ctx.createLinearGradient(0, top, 0, baseY);
-        grad.addColorStop(0, `rgba(${c.r},${c.g},${c.b},${0.10 + 0.08 * intensity})`);
-        grad.addColorStop(0.6, `rgba(${c.r},${c.g},${c.b},${0.04 + 0.05 * intensity})`);
-        grad.addColorStop(1, `rgba(${c.r},${c.g},${c.b},0)`);
+        grad.addColorStop(0, `rgba(${INK.r},${INK.g},${INK.b},${0.10 + 0.08 * intensity})`);
+        grad.addColorStop(0.6, `rgba(${INK.r},${INK.g},${INK.b},${0.04 + 0.05 * intensity})`);
+        grad.addColorStop(1, `rgba(${INK.r},${INK.g},${INK.b},0)`);
         ctx.fillStyle = grad;
         // leave a 1px gap between bars for separation
         ctx.fillRect(i * barW + 0.5, top, barW - 1, h);
 
         // very subtle tip — only visible when amped up by cursor
         if (intensity > 0.55) {
-          ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},${0.18 * (intensity - 0.55) / 0.45})`;
+          ctx.fillStyle = `rgba(${INK.r},${INK.g},${INK.b},${0.18 * (intensity - 0.55) / 0.45})`;
           ctx.fillRect(i * barW + 0.5, top, barW - 1, 1);
         }
       }
@@ -172,9 +181,9 @@ function HeroBackground() {
       if (m.active) {
         const haloR = 200 + m.kick * 80;
         const halo = ctx.createRadialGradient(mx, my, 0, mx, my, haloR);
-        halo.addColorStop(0, 'rgba(240, 168, 56, 0.07)');
-        halo.addColorStop(0.5, 'rgba(225, 90, 90, 0.03)');
-        halo.addColorStop(1, 'rgba(225, 90, 90, 0)');
+        halo.addColorStop(0,   `rgba(${INK.r},${INK.g},${INK.b},0.07)`);
+        halo.addColorStop(0.5, `rgba(${INK.r},${INK.g},${INK.b},0.03)`);
+        halo.addColorStop(1,   `rgba(${INK.r},${INK.g},${INK.b},0)`);
         ctx.fillStyle = halo;
         ctx.beginPath();
         ctx.arc(mx, my, haloR, 0, Math.PI * 2);
