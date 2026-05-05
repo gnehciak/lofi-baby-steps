@@ -569,7 +569,7 @@ section {
 .mood:hover { transform: translateY(-2px); }
 .mood.selected { border-color: var(--rose); background: #fdf4f4; }
 .mood .icon {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
   margin-bottom: 8px;
@@ -584,11 +584,13 @@ section {
 .mood:hover .icon { color: var(--rose-dark); transform: translateY(-1px); }
 .mood.selected .icon { color: var(--rose-dark); }
 .mood .name {
+  display: block;
   font-weight: 700;
   font-size: 0.95rem;
   color: var(--sepia);
 }
 .mood .desc {
+  display: block;
   font-size: 0.78rem;
   color: var(--sepia-2);
   font-family: 'Inter', sans-serif;
