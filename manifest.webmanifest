@@ -1,0 +1,17 @@
+{
+  "name": "Lo-Fi Baby Steps",
+  "short_name": "Lo-Fi Steps",
+  "description": "A Stage 4 scaffolded composition activity. Make your first lo-fi beat in four small steps.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f4ead5",
+  "theme_color": "#3a2a1c",
+  "icons": [
+    {
+      "src": "assets/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
