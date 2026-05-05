@@ -19,9 +19,26 @@ window.addEventListener('load', () => {
 // ============================================================
 //  SHARED LO-FI INSTRUMENTS
 // ============================================================
-// Master lo-fi bus
+// Master lo-fi FX chain (entry point: masterCrush → wobble → filter → out).
+//   - masterCrush (BitCrusher): off by default (wet=0)
+//   - masterWobble (Vibrato): off by default (depth=0)
+//   - masterFilter (Lowpass): always-on gentle warmth at 3500 Hz; the "Muffled"
+//     dust toggle drops it to 1500 Hz for a stronger effect.
 const masterFilter = new Tone.Filter(3500, 'lowpass').toDestination();
-const masterReverb = new Tone.Reverb({ decay: 2.2, wet: 0.18 }).connect(masterFilter);
+const masterWobble = new Tone.Vibrato({ frequency: 0.3, depth: 0 }).connect(masterFilter);
+const masterCrush = new Tone.BitCrusher(6).connect(masterWobble);
+masterCrush.wet.value = 0;
+const masterReverb = new Tone.Reverb({ decay: 2.2, wet: 0.18 }).connect(masterCrush);
+
+// Vinyl crackle generator — bypasses the dust chain so the user controls it
+// independently of the other lo-fi processing. -80 dB is the "off" floor;
+// rampTo(-Infinity) isn't reliable across Tone.js param types, so we use a
+// finite-but-inaudible value instead.
+const SILENT_DB = -80;
+const crackleVol = new Tone.Volume(SILENT_DB).toDestination();
+const crackleHp = new Tone.Filter(3500, 'highpass').connect(crackleVol);
+const crackleSrc = new Tone.Noise('pink').connect(crackleHp);
+crackleSrc.start();
 
 // Drum kit
 const kick = new Tone.MembraneSynth({
@@ -29,25 +46,25 @@ const kick = new Tone.MembraneSynth({
   oscillator: { type: 'sine' },
   envelope: { attack: 0.001, decay: 0.4, sustain: 0.01, release: 1.2 },
   volume: -2
-}).connect(masterFilter);
+}).connect(masterCrush);
 
 const snareNoise = new Tone.NoiseSynth({
   noise: { type: 'pink' },
   envelope: { attack: 0.001, decay: 0.18, sustain: 0 },
   volume: -10
-}).connect(masterFilter);
+}).connect(masterCrush);
 
 const snareTone = new Tone.Synth({
   oscillator: { type: 'triangle' },
   envelope: { attack: 0.001, decay: 0.12, sustain: 0, release: 0.1 },
   volume: -14
-}).connect(masterFilter);
+}).connect(masterCrush);
 
 const hat = new Tone.MetalSynth({
   envelope: { attack: 0.001, decay: 0.05, release: 0.01 },
   harmonicity: 5.1, modulationIndex: 32, resonance: 4000, octaves: 1.5,
   volume: -28
-}).connect(masterFilter);
+}).connect(masterCrush);
 
 // Pad / chord instrument — soft electric piano feel
 const pad = new Tone.PolySynth(Tone.Synth, {
@@ -63,6 +80,15 @@ const lead = new Tone.Synth({
   volume: -8
 }).connect(masterReverb);
 
+// Bass — warm sub-bass with a soft attack
+const bass = new Tone.MonoSynth({
+  oscillator: { type: 'triangle' },
+  filter: { Q: 2, type: 'lowpass', rolloff: -12 },
+  envelope: { attack: 0.02, decay: 0.4, sustain: 0.55, release: 0.4 },
+  filterEnvelope: { attack: 0.01, decay: 0.2, sustain: 0.55, release: 0.4, baseFrequency: 200, octaves: 2 },
+  volume: -10
+}).connect(masterCrush);
+
 // Click track for the metronome
 const click = new Tone.MembraneSynth({
   pitchDecay: 0.008, octaves: 2,
@@ -72,6 +98,36 @@ const click = new Tone.MembraneSynth({
 
 Tone.Transport.swing = 0.32;
 Tone.Transport.swingSubdivision = '16n';
+Tone.Transport.bpm.value = 78; // global default — every widget reads from here
+
+// ============================================================
+//  LAYER REGISTRY — multiple widgets play together on one Transport
+// ============================================================
+const activeLayers = new Set(); // 'drum' | 'chord' | 'melody' | 'bass'
+
+function layerStarted(name) {
+  activeLayers.add(name);
+  if (Tone.Transport.state !== 'started') {
+    Tone.Transport.position = 0;
+    Tone.Transport.start();
+  }
+  updateMasterPill();
+}
+
+function layerStopped(name) {
+  activeLayers.delete(name);
+  if (activeLayers.size === 0 && !heroPlaying) {
+    Tone.Transport.stop();
+    Tone.Transport.position = 0;
+  }
+  updateMasterPill();
+}
+
+// First layer enters at position 0; later layers wait for the next bar line.
+function nextLayerStartTime() {
+  return activeLayers.size === 0 ? 0 : '@1m';
+}
+
 
 // ============================================================
 //  HERO DEMO LOOP
@@ -142,65 +198,72 @@ function startHeroLoop() {
 }
 
 function stopHeroLoop() {
-  Tone.Transport.stop();
-  Tone.Transport.cancel();
   if (heroLoop) heroLoop.dispose();
   if (heroChordLoop) heroChordLoop.dispose();
   if (heroMelodyLoop) heroMelodyLoop.dispose();
   heroLoop = heroChordLoop = heroMelodyLoop = null;
   heroVinyl.classList.remove('spinning');
+  heroPlaying = false;
+  heroPlayBtn.innerHTML = '<span class="play-icon"></span> Play demo';
+  // Hero owns the Transport exclusively; safe to stop it here.
+  Tone.Transport.stop();
+  Tone.Transport.position = 0;
+  updateMasterPill();
+}
+
+// Called by every layer-start. Does nothing if hero isn't running.
+function stopHeroIfPlaying() {
+  if (heroPlaying) stopHeroLoop();
 }
 
 heroPlayBtn.addEventListener('click', async () => {
   await startAudio();
   if (heroPlaying) {
     stopHeroLoop();
-    heroPlayBtn.innerHTML = '<span class="play-icon"></span> Play demo';
   } else {
-    // make sure other transports are clean
-    stopAllOthers('hero');
+    // Hero is exclusive — wipe any active layers first
+    stopAllLayers();
     startHeroLoop();
+    heroPlaying = true;
     heroPlayBtn.innerHTML = '<span class="stop-icon"></span> Stop demo';
+    updateMasterPill();
   }
-  heroPlaying = !heroPlaying;
 });
 
 // ============================================================
-//  STEP 1 — METRONOME
+//  STEP 1 — METRONOME (independent clock — does NOT touch Transport)
 // ============================================================
+// The metronome runs on its own Tone.Clock so its tempo is fully
+// decoupled from the layer tempo (drums/chords/melody on Transport).
+// Step 1 is a teaching aid for finding tempo, not a layer.
 const metroBtn = document.getElementById('metroBtn');
 const metroTempo = document.getElementById('metroTempo');
 const metroBpm = document.getElementById('metroBpm');
 let metroPlaying = false;
-let metroLoop = null;
+let metroBeat = 0;
+
+const metroClock = new Tone.Clock((time) => {
+  const pitch = (metroBeat % 4 === 0) ? 'C5' : 'C4';
+  click.triggerAttackRelease(pitch, '32n', time);
+  metroBeat++;
+}, parseInt(metroTempo.value) / 60); // frequency in Hz; bpm/60 = quarter-note rate
 
 metroTempo.addEventListener('input', e => {
-  metroBpm.textContent = e.target.value;
-  if (metroPlaying) Tone.Transport.bpm.value = parseInt(e.target.value);
-  // also reflect in drumTempo if not playing the drums
-  const dt = document.getElementById('drumTempo');
-  const db = document.getElementById('drumBpm');
-  if (dt && !drumPlaying) { dt.value = e.target.value; db.textContent = e.target.value; }
+  const bpm = parseInt(e.target.value);
+  metroBpm.textContent = bpm;
+  metroClock.frequency.value = bpm / 60;
 });
 
 metroBtn.addEventListener('click', async () => {
   await startAudio();
   if (metroPlaying) {
-    Tone.Transport.stop();
-    if (metroLoop) metroLoop.dispose();
-    metroLoop = null;
+    metroClock.stop();
     metroPlaying = false;
     metroBtn.innerHTML = '<span class="play-icon"></span> Click track';
   } else {
-    stopAllOthers('metro');
-    Tone.Transport.bpm.value = parseInt(metroTempo.value);
-    let beat = 0;
-    metroLoop = new Tone.Loop((time) => {
-      const pitch = (beat % 4 === 0) ? 'C5' : 'C4';
-      click.triggerAttackRelease(pitch, '32n', time);
-      beat++;
-    }, '4n').start(0);
-    Tone.Transport.start();
+    metroBeat = 0;
+    metroClock.frequency.value = parseInt(metroTempo.value) / 60;
+    metroClock.start();
     metroPlaying = true;
     metroBtn.innerHTML = '<span class="stop-icon"></span> Stop click';
   }
@@ -213,15 +276,14 @@ document.querySelectorAll('.mood').forEach(m => {
   m.addEventListener('click', () => {
     document.querySelectorAll('.mood').forEach(x => x.classList.remove('selected'));
     m.classList.add('selected');
-    // suggest a tempo that fits the mood
+    // Suggest a tempo that fits the mood. Step 1 is intentionally isolated
+    // from the master/layer tempo, so this only updates the metronome.
     const moodTempos = { study: 80, rainy: 72, latenight: 76, sunday: 84 };
     const t = moodTempos[m.dataset.mood];
     if (t) {
       metroTempo.value = t;
       metroBpm.textContent = t;
-      const dt = document.getElementById('drumTempo');
-      const db = document.getElementById('drumBpm');
-      if (dt) { dt.value = t; db.textContent = t; }
+      metroClock.frequency.value = t / 60;
     }
   });
 });
@@ -233,8 +295,6 @@ const drumGrid = document.getElementById('drumGrid');
 const drumPlay = document.getElementById('drumPlay');
 const drumClear = document.getElementById('drumClear');
 const drumStarter = document.getElementById('drumStarter');
-const drumTempo = document.getElementById('drumTempo');
-const drumBpm = document.getElementById('drumBpm');
 
 const ROWS = ['kick', 'snare', 'hat'];
 const ROW_LABELS = ['Kick', 'Snare', 'Hat'];
@@ -245,7 +305,11 @@ let drumLoop = null;
 
 function buildDrumGrid() {
   drumGrid.innerHTML = '';
-  ROWS.forEach((row, r) => {
+  // Visually render rows top→bottom as Hat, Snare, Kick (so the kick — the
+  // lowest-pitched sound — sits at the bottom). Audio indices stay unchanged.
+  const visualOrder = [2, 1, 0];
+  visualOrder.forEach(r => {
+    const row = ROWS[r];
     const label = document.createElement('div');
     label.className = 'row-label';
     label.textContent = ROW_LABELS[r];
@@ -288,43 +352,43 @@ drumStarter.addEventListener('click', () => {
   applyDrumState();
 });
 
-drumTempo.addEventListener('input', e => {
-  drumBpm.textContent = e.target.value;
-  if (drumPlaying) Tone.Transport.bpm.value = parseInt(e.target.value);
-});
+
+function startDrumLayer() {
+  stopHeroIfPlaying();
+  let step = 0;
+  drumLoop = new Tone.Loop((time) => {
+    if (drumState[0][step]) kick.triggerAttackRelease('C2', '8n', time);
+    if (drumState[1][step]) {
+      snareNoise.triggerAttackRelease('16n', time);
+      snareTone.triggerAttackRelease('G3', '16n', time);
+    }
+    if (drumState[2][step]) hat.triggerAttackRelease('C5', '32n', time, 0.4);
+    const curStep = step;
+    Tone.Draw.schedule(() => {
+      document.querySelectorAll('.drum-grid .cell.playing').forEach(c => c.classList.remove('playing'));
+      document.querySelectorAll(`.drum-grid .cell[data-step="${curStep}"]`).forEach(c => c.classList.add('playing'));
+    }, time);
+    step = (step + 1) % STEPS;
+  }, '16n');
+  drumLoop.start(nextLayerStartTime());
+  drumPlaying = true;
+  drumPlay.innerHTML = '<span class="stop-icon"></span> Stop';
+  layerStarted('drum');
+}
+
+function stopDrumLayer() {
+  if (!drumPlaying) return;
+  if (drumLoop) drumLoop.dispose();
+  drumLoop = null;
+  drumPlaying = false;
+  drumPlay.innerHTML = '<span class="play-icon"></span> Play';
+  document.querySelectorAll('.drum-grid .cell.playing').forEach(c => c.classList.remove('playing'));
+  layerStopped('drum');
+}
 
 drumPlay.addEventListener('click', async () => {
   await startAudio();
-  if (drumPlaying) {
-    Tone.Transport.stop();
-    if (drumLoop) drumLoop.dispose();
-    drumLoop = null;
-    drumPlaying = false;
-    drumPlay.innerHTML = '<span class="play-icon"></span> Play';
-    document.querySelectorAll('.drum-grid .cell.playing').forEach(c => c.classList.remove('playing'));
-  } else {
-    stopAllOthers('drum');
-    Tone.Transport.bpm.value = parseInt(drumTempo.value);
-    let step = 0;
-    drumLoop = new Tone.Loop((time) => {
-      if (drumState[0][step]) kick.triggerAttackRelease('C2', '8n', time);
-      if (drumState[1][step]) {
-        snareNoise.triggerAttackRelease('16n', time);
-        snareTone.triggerAttackRelease('G3', '16n', time);
-      }
-      if (drumState[2][step]) hat.triggerAttackRelease('C5', '32n', time, 0.4);
-      // visual highlight
-      const curStep = step;
-      Tone.Draw.schedule(() => {
-        document.querySelectorAll('.drum-grid .cell.playing').forEach(c => c.classList.remove('playing'));
-        document.querySelectorAll(`.drum-grid .cell[data-step="${curStep}"]`).forEach(c => c.classList.add('playing'));
-      }, time);
-      step = (step + 1) % STEPS;
-    }, '16n').start(0);
-    Tone.Transport.start();
-    drumPlaying = true;
-    drumPlay.innerHTML = '<span class="stop-icon"></span> Stop';
-  }
+  drumPlaying ? stopDrumLayer() : startDrumLayer();
 });
 
 // ============================================================
@@ -536,29 +600,29 @@ document.querySelectorAll('.chord-card').forEach(card => {
     activeProg = idx;
     chordRollGeom = renderChordRoll(idx);
     if (chordPlaying) {
-      // restart the loop with the new progression
-      stopChordsAudio();
-      startChordLoop(idx);
+      // swap progression in place — dispose current loop and start a new one
+      // aligned to the next bar so the swap feels musical
+      if (chordLoop) chordLoop.dispose();
+      chordLoop = null;
+      buildAndStartChordLoop(idx);
     } else {
       // auto-play on selection
-      stopAllOthers('chord');
-      startChordLoop(idx);
+      startChordLayer();
     }
   });
 });
 
 let chordPhAnim = null;
-function startChordLoop(idx) {
-  Tone.Transport.bpm.value = CHORD_BPM;
+
+function buildAndStartChordLoop(idx) {
   let i = 0;
   const prog = PROGS[idx].chords;
   const beatsPerChord = 2, beatsTotal = 8;
-  const chordSec = (60 / CHORD_BPM) * beatsPerChord;
   chordLoop = new Tone.Loop((time) => {
     pad.triggerAttackRelease(prog[i], '2n', time, 0.55);
     const curI = i;
+    const chordSec = (60 / Tone.Transport.bpm.value) * beatsPerChord;
     Tone.Draw.schedule(() => {
-      // playhead: smoothly slide across this chord's segment
       const ph = document.getElementById('chordPlayhead');
       if (ph && chordRollGeom) {
         const xStart = (curI * beatsPerChord / beatsTotal) * chordRollGeom.gridW;
@@ -570,21 +634,25 @@ function startChordLoop(idx) {
           { duration: chordSec * 1000, easing: 'linear', fill: 'forwards' }
         );
       }
-      // chord pill highlight on the active card
       document.querySelectorAll('.chord-card.active .chords span').forEach(s => s.classList.remove('playing'));
       const span = document.querySelector(`.chord-card.active .chords span[data-i="${curI}"]`);
       if (span) span.classList.add('playing');
     }, time);
     i = (i + 1) % 4;
-  }, '2n').start(0);
-  Tone.Transport.start();
-  chordPlaying = true;
-  setChordPlayBtn(true);
+  }, '2n');
+  chordLoop.start(nextLayerStartTime());
 }
 
-function stopChordsAudio() {
-  Tone.Transport.stop();
-  Tone.Transport.cancel();
+function startChordLayer() {
+  stopHeroIfPlaying();
+  buildAndStartChordLoop(activeProg);
+  chordPlaying = true;
+  setChordPlayBtn(true);
+  layerStarted('chord');
+}
+
+function stopChordLayer() {
+  if (!chordPlaying) return;
   if (chordLoop) chordLoop.dispose();
   chordLoop = null;
   chordPlaying = false;
@@ -593,6 +661,7 @@ function stopChordsAudio() {
   const ph = document.getElementById('chordPlayhead');
   if (ph) ph.setAttribute('opacity', '0');
   setChordPlayBtn(false);
+  layerStopped('chord');
 }
 
 function setChordPlayBtn(playing) {
@@ -604,17 +673,12 @@ function setChordPlayBtn(playing) {
 }
 
 document.getElementById('chordStop').addEventListener('click', () => {
-  if (chordPlaying) stopChordsAudio();
+  stopChordLayer();
 });
 
 document.getElementById('chordPlayBtn').addEventListener('click', async () => {
   await startAudio();
-  if (chordPlaying) {
-    stopChordsAudio();
-  } else {
-    stopAllOthers('chord');
-    startChordLoop(activeProg);
-  }
+  chordPlaying ? stopChordLayer() : startChordLayer();
 });
 
 document.getElementById('chordExportBtn').addEventListener('click', () => {
@@ -631,7 +695,7 @@ document.getElementById('chordExportBtn').addEventListener('click', () => {
       events.push({ time: end, type: 'off', note: midi, velocity: 0 });
     }
   }
-  const bytes = encodeMidi(events, CHORD_BPM, CHORD_PPQ);
+  const bytes = encodeMidi(events, Math.round(Tone.Transport.bpm.value), CHORD_PPQ);
   downloadMidi(bytes, `lofi-chords-${safeFilename(prog.name)}.mid`);
 });
 
@@ -658,7 +722,7 @@ function buildMelodyRoll() {
   // header row with bar markers
   const header = document.createElement('div');
   header.className = 'mr-header';
-  header.innerHTML = '<div></div>' +
+  header.innerHTML =
     '<div class="num">1</div><div class="num">2</div><div class="num">3</div><div class="num">4</div>';
   root.appendChild(header);
 
@@ -713,7 +777,7 @@ function clearMelodyHighlight() {
 document.getElementById('melodyClear').addEventListener('click', () => {
   melodyState = MELODY_PITCHES.map(() => Array(MELODY_STEPS).fill(false));
   applyMelodyState();
-  if (melodyPlaying) stopMelody();
+  if (melodyPlaying) stopMelodyLayer();
 });
 
 document.getElementById('melodyRandom').addEventListener('click', () => {
@@ -745,33 +809,24 @@ document.getElementById('melodyRandom').addEventListener('click', () => {
   applyMelodyState();
 });
 
-document.getElementById('melodyPlay').addEventListener('click', async () => {
-  await startAudio();
-  if (melodyPlaying) {
-    stopMelody();
-    return;
-  }
+function startMelodyLayer() {
   // need at least one note
   const hasAny = melodyState.some(row => row.some(c => c));
   if (!hasAny) return;
-  stopAllOthers('melody');
-  Tone.Transport.bpm.value = MELODY_BPM;
+  stopHeroIfPlaying();
   melodyCurrentStep = -1;
   let step = 0;
   melodyLoop = new Tone.Loop((time) => {
     const curStep = step;
-    // collect notes that start at this step (cell on; previous cell off in same row)
     const triggers = [];
     for (let pi = 0; pi < MELODY_PITCHES.length; pi++) {
       if (melodyState[pi][curStep] && (curStep === 0 || !melodyState[pi][curStep - 1])) {
-        // find run length
         let len = 1;
         while (curStep + len < MELODY_STEPS && melodyState[pi][curStep + len]) len++;
         triggers.push({ pitch: MELODY_PITCHES[pi], dur: len });
       }
     }
-    // duration: t.dur sixteenth notes converted to seconds
-    const sixteenthSec = 60 / MELODY_BPM / 4;
+    const sixteenthSec = 60 / Tone.Transport.bpm.value / 4;
     for (const t of triggers) {
       lead.triggerAttackRelease(t.pitch, sixteenthSec * t.dur * 0.95, time, 0.7);
     }
@@ -782,21 +837,27 @@ document.getElementById('melodyPlay').addEventListener('click', async () => {
       });
     }, time);
     step = (step + 1) % MELODY_STEPS;
-  }, '16n').start(0);
-  Tone.Transport.start();
+  }, '16n');
+  melodyLoop.start(nextLayerStartTime());
   melodyPlaying = true;
   setMelodyPlayBtn(true);
-});
+  layerStarted('melody');
+}
 
-function stopMelody() {
-  Tone.Transport.stop();
-  Tone.Transport.cancel();
+function stopMelodyLayer() {
+  if (!melodyPlaying) return;
   if (melodyLoop) melodyLoop.dispose();
   melodyLoop = null;
   melodyPlaying = false;
   clearMelodyHighlight();
   setMelodyPlayBtn(false);
+  layerStopped('melody');
 }
+
+document.getElementById('melodyPlay').addEventListener('click', async () => {
+  await startAudio();
+  melodyPlaying ? stopMelodyLayer() : startMelodyLayer();
+});
 
 function setMelodyPlayBtn(playing) {
   const b = document.getElementById('melodyPlay');
@@ -826,57 +887,455 @@ document.getElementById('melodyExportBtn').addEventListener('click', () => {
     }
   }
   if (events.length === 0) return; // nothing to export
-  const bytes = encodeMidi(events, MELODY_BPM, MELODY_PPQ);
+  const bytes = encodeMidi(events, Math.round(Tone.Transport.bpm.value), MELODY_PPQ);
   downloadMidi(bytes, 'lofi-melody.mid');
 });
 
 // ============================================================
-//  TRANSPORT CONFLICT MANAGER
-//  Tone.Transport is shared. Stop everyone else when one starts.
+//  STEP 5 — BASS (follows the active chord progression)
 // ============================================================
-function stopAllOthers(except) {
-  if (except !== 'hero' && heroPlaying) {
-    Tone.Transport.stop();
-    Tone.Transport.cancel();
-    if (heroLoop) heroLoop.dispose();
-    if (heroChordLoop) heroChordLoop.dispose();
-    if (heroMelodyLoop) heroMelodyLoop.dispose();
-    heroLoop = heroChordLoop = heroMelodyLoop = null;
-    heroPlaying = false;
-    heroVinyl.classList.remove('spinning');
-    heroPlayBtn.innerHTML = '<span class="play-icon"></span> Play demo';
-  }
-  if (except !== 'metro' && metroPlaying) {
-    if (metroLoop) metroLoop.dispose();
-    metroLoop = null;
-    metroPlaying = false;
-    metroBtn.innerHTML = '<span class="play-icon"></span> Click track';
-  }
-  if (except !== 'drum' && drumPlaying) {
-    if (drumLoop) drumLoop.dispose();
-    drumLoop = null;
-    drumPlaying = false;
-    drumPlay.innerHTML = '<span class="play-icon"></span> Play';
-    document.querySelectorAll('.drum-grid .cell.playing').forEach(c => c.classList.remove('playing'));
-  }
-  if (except !== 'chord' && chordPlaying) {
-    if (chordLoop) chordLoop.dispose();
-    chordLoop = null;
-    chordPlaying = false;
-    // keep .active on the selected card; just clear playback indicators
-    document.querySelectorAll('.chord-card .chords span').forEach(s => s.classList.remove('playing'));
-    const ph = document.getElementById('chordPlayhead');
-    if (ph) ph.setAttribute('opacity', '0');
-    setChordPlayBtn(false);
-  }
-  if (except !== 'melody' && melodyPlaying) {
-    if (melodyLoop) melodyLoop.dispose();
-    melodyLoop = null;
-    melodyPlaying = false;
-    clearMelodyHighlight();
-    setMelodyPlayBtn(false);
-  }
-  // make sure transport is stopped & cleared if nothing is playing
-  Tone.Transport.stop();
-  Tone.Transport.cancel();
+const BASS_LABELS = { roots: 'Just roots', pulse: 'Pulse', octave: 'Octave hop' };
+
+let bassPattern = 'roots';
+let bassPlaying = false;
+let bassLoop = null;
+let bassPhAnim = null;
+let bassBeat = 0;
+let bassRollGeom = null;
+
+function chordRoot(chord) {
+  // Drop the chord's root note (chord[0]) by one octave for the bass voice.
+  const m = chord[0].match(/^([A-G][#b]?)(-?\d+)$/);
+  if (!m) return 'A2';
+  return m[1] + (parseInt(m[2], 10) - 1);
 }
+
+function octaveUp(noteName) {
+  const m = noteName.match(/^([A-G][#b]?)(-?\d+)$/);
+  if (!m) return noteName;
+  return m[1] + (parseInt(m[2], 10) + 1);
+}
+
+function renderBassRoll() {
+  const prog = PROGS[activeProg];
+  const lo = 41, hi = 64; // F2..E4 — covers all roots + their octave-up
+  const rows = hi - lo + 1;
+  const W = 720, H = 180;
+  const keyW = 50, padL = keyW + 6, padT = 8, padR = 10, padB = 22;
+  const gridW = W - padL - padR;
+  const gridH = H - padT - padB;
+  const rowH = gridH / rows;
+  const beats = 8;
+  const colW = gridW / beats;
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Bass piano roll for ${prog.name}">`;
+  svg += `<rect x="0" y="0" width="${W}" height="${H}" fill="#fffdf7" rx="6"/>`;
+
+  // pitch row stripes
+  for (let i = 0; i < rows; i++) {
+    const midi = hi - i;
+    const pc = midi % 12;
+    const isBlack = [1, 3, 6, 8, 10].includes(pc);
+    const y = padT + i * rowH;
+    svg += `<rect x="${padL}" y="${y}" width="${gridW}" height="${rowH}" fill="${isBlack ? '#ebdfc3' : '#fffdf7'}" opacity="${isBlack ? 0.55 : 1}"/>`;
+  }
+
+  // octave labels (Cs)
+  for (let i = 0; i < rows; i++) {
+    const midi = hi - i;
+    if (midi % 12 === 0) {
+      const y = padT + i * rowH + rowH / 2;
+      const oct = Math.floor(midi / 12) - 1;
+      svg += `<text x="${keyW - 8}" y="${y + 3.5}" text-anchor="end" font-family="Inter, sans-serif" font-size="9" fill="#5a4636" opacity="0.75">C${oct}</text>`;
+    }
+  }
+
+  // beat dividers
+  for (let b = 0; b <= beats; b++) {
+    const x = padL + b * colW;
+    const heavy = b % 2 === 0;
+    svg += `<line x1="${x}" y1="${padT}" x2="${x}" y2="${padT + gridH}" stroke="#3a2a1c" stroke-width="${heavy ? 1 : 0.4}" opacity="${heavy ? 0.18 : 0.1}"/>`;
+  }
+
+  // bass blocks per pattern
+  for (let ci = 0; ci < 4; ci++) {
+    const root = chordRoot(prog.chords[ci]);
+    const rootMidi = noteNameToMidi(root);
+    const baseX = padL + ci * 2 * colW;
+    const colour = CHORD_PALETTE[ci];
+
+    if (bassPattern === 'roots') {
+      const x = baseX + 3, w = 2 * colW - 6;
+      const y = padT + (hi - rootMidi) * rowH + 1;
+      svg += `<rect x="${x}" y="${y}" width="${w}" height="${rowH - 2}" fill="${colour}" rx="3" opacity="0.92"/>`;
+    } else if (bassPattern === 'pulse') {
+      for (let beat = 0; beat < 2; beat++) {
+        const x = baseX + beat * colW + 3, w = colW - 6;
+        const y = padT + (hi - rootMidi) * rowH + 1;
+        svg += `<rect x="${x}" y="${y}" width="${w}" height="${rowH - 2}" fill="${colour}" rx="3" opacity="0.92"/>`;
+      }
+    } else if (bassPattern === 'octave') {
+      const x0 = baseX + 3, w0 = colW - 6;
+      const y0 = padT + (hi - rootMidi) * rowH + 1;
+      svg += `<rect x="${x0}" y="${y0}" width="${w0}" height="${rowH - 2}" fill="${colour}" rx="3" opacity="0.92"/>`;
+      const upMidi = rootMidi + 12;
+      const x1 = baseX + colW + 3, w1 = colW - 6;
+      const y1 = padT + (hi - upMidi) * rowH + 1;
+      svg += `<rect x="${x1}" y="${y1}" width="${w1}" height="${rowH - 2}" fill="${colour}" rx="3" opacity="0.92"/>`;
+    }
+  }
+
+  // chord labels (matches chord roll for visual consistency)
+  for (let ci = 0; ci < 4; ci++) {
+    const x = padL + ci * 2 * colW + colW;
+    svg += `<text x="${x}" y="${H - 6}" text-anchor="middle" font-family="Fraunces, serif" font-size="13" font-weight="700" fill="#3a2a1c">${prog.labels[ci]}</text>`;
+  }
+
+  // playhead
+  svg += `<line id="bassPlayhead" x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT + gridH}" stroke="#3a2a1c" stroke-width="1.6" opacity="0" pointer-events="none"/>`;
+  svg += `</svg>`;
+
+  document.getElementById('bassRoll').innerHTML = svg;
+  document.getElementById('bassRollName').textContent = `${BASS_LABELS[bassPattern]} · follows ${prog.name}`;
+  return { padL, padT, gridW, gridH, beats };
+}
+
+function buildAndStartBassLoop() {
+  bassBeat = 0;
+  bassLoop = new Tone.Loop((time) => {
+    const prog = PROGS[activeProg].chords;
+    const chordIdx = Math.floor(bassBeat / 2) % 4;
+    const root = chordRoot(prog[chordIdx]);
+    const beatInChord = bassBeat % 2;
+
+    if (bassPattern === 'roots') {
+      if (beatInChord === 0) bass.triggerAttackRelease(root, '2n', time, 0.7);
+    } else if (bassPattern === 'pulse') {
+      bass.triggerAttackRelease(root, '8n', time, 0.65);
+    } else if (bassPattern === 'octave') {
+      const note = beatInChord === 0 ? root : octaveUp(root);
+      bass.triggerAttackRelease(note, '8n', time, 0.7);
+    }
+
+    const curBeat = bassBeat;
+    const beatSec = 60 / Tone.Transport.bpm.value;
+    Tone.Draw.schedule(() => {
+      const ph = document.getElementById('bassPlayhead');
+      if (ph && bassRollGeom) {
+        const xStart = (curBeat / 8) * bassRollGeom.gridW;
+        const xEnd = ((curBeat + 1) / 8) * bassRollGeom.gridW;
+        ph.setAttribute('opacity', '0.85');
+        if (bassPhAnim) bassPhAnim.cancel();
+        bassPhAnim = ph.animate(
+          [{ transform: `translateX(${xStart}px)` }, { transform: `translateX(${xEnd}px)` }],
+          { duration: beatSec * 1000, easing: 'linear', fill: 'forwards' }
+        );
+      }
+    }, time);
+
+    bassBeat = (bassBeat + 1) % 8;
+  }, '4n');
+  bassLoop.start(nextLayerStartTime());
+}
+
+function startBassLayer() {
+  stopHeroIfPlaying();
+  buildAndStartBassLoop();
+  bassPlaying = true;
+  setBassPlayBtn(true);
+  layerStarted('bass');
+}
+
+function stopBassLayer() {
+  if (!bassPlaying) return;
+  if (bassLoop) bassLoop.dispose();
+  bassLoop = null;
+  bassPlaying = false;
+  if (bassPhAnim) { bassPhAnim.cancel(); bassPhAnim = null; }
+  const ph = document.getElementById('bassPlayhead');
+  if (ph) ph.setAttribute('opacity', '0');
+  setBassPlayBtn(false);
+  layerStopped('bass');
+}
+
+function setBassPlayBtn(playing) {
+  const b = document.getElementById('bassPlayBtn');
+  if (!b) return;
+  b.innerHTML = playing
+    ? '<span class="stop-icon"></span> Stop loop'
+    : '<span class="play-icon"></span> Play loop';
+}
+
+bassRollGeom = renderBassRoll();
+
+document.querySelectorAll('.bass-card').forEach(card => {
+  card.addEventListener('click', async () => {
+    await startAudio();
+    document.querySelectorAll('.bass-card').forEach(c => c.classList.remove('active'));
+    card.classList.add('active');
+    bassPattern = card.dataset.pat;
+    bassRollGeom = renderBassRoll();
+    if (bassPlaying) {
+      if (bassLoop) bassLoop.dispose();
+      bassLoop = null;
+      buildAndStartBassLoop();
+    } else {
+      startBassLayer();
+    }
+  });
+});
+
+// When the chord progression changes, keep the bass roll + loop in sync.
+document.querySelectorAll('.chord-card').forEach(card => {
+  card.addEventListener('click', () => {
+    bassRollGeom = renderBassRoll();
+    if (bassPlaying) {
+      if (bassLoop) bassLoop.dispose();
+      bassLoop = null;
+      buildAndStartBassLoop();
+    }
+  });
+});
+
+document.getElementById('bassPlayBtn').addEventListener('click', async () => {
+  await startAudio();
+  bassPlaying ? stopBassLayer() : startBassLayer();
+});
+document.getElementById('bassStop').addEventListener('click', () => {
+  stopBassLayer();
+});
+
+document.getElementById('bassExportBtn').addEventListener('click', () => {
+  const prog = PROGS[activeProg];
+  const PPQ = 96;
+  const events = [];
+  for (let beat = 0; beat < 8; beat++) {
+    const chordIdx = Math.floor(beat / 2);
+    const root = chordRoot(prog.chords[chordIdx]);
+    const beatInChord = beat % 2;
+    const startTick = beat * PPQ;
+
+    if (bassPattern === 'roots') {
+      if (beatInChord === 0) {
+        const midi = noteNameToMidi(root);
+        events.push({ time: startTick, type: 'on', note: midi, velocity: 80 });
+        events.push({ time: startTick + 2 * PPQ, type: 'off', note: midi, velocity: 0 });
+      }
+    } else if (bassPattern === 'pulse') {
+      const midi = noteNameToMidi(root);
+      events.push({ time: startTick, type: 'on', note: midi, velocity: 76 });
+      events.push({ time: startTick + Math.floor(PPQ * 0.9), type: 'off', note: midi, velocity: 0 });
+    } else if (bassPattern === 'octave') {
+      const note = beatInChord === 0 ? root : octaveUp(root);
+      const midi = noteNameToMidi(note);
+      events.push({ time: startTick, type: 'on', note: midi, velocity: 78 });
+      events.push({ time: startTick + Math.floor(PPQ * 0.9), type: 'off', note: midi, velocity: 0 });
+    }
+  }
+  const bytes = encodeMidi(events, Math.round(Tone.Transport.bpm.value), PPQ);
+  downloadMidi(bytes, `lofi-bass-${bassPattern}-${safeFilename(prog.name)}.mid`);
+});
+
+// ============================================================
+//  STEP 6 — DUSTY FX (master bus parameters)
+// ============================================================
+const dustState = { crackle: false, muffle: false, wobble: false, crush: false };
+
+function applyDust() {
+  // Each param ramps over 0.4s so toggles don't click.
+  crackleVol.volume.rampTo(dustState.crackle ? -22 : SILENT_DB, 0.4);
+  masterFilter.frequency.rampTo(dustState.muffle ? 1500 : 3500, 0.4);
+  masterWobble.depth.rampTo(dustState.wobble ? 0.18 : 0, 0.4);
+  masterCrush.wet.rampTo(dustState.crush ? 0.55 : 0, 0.4);
+}
+
+function setDustCardUi(card, on) {
+  card.setAttribute('aria-pressed', on ? 'true' : 'false');
+  const state = card.querySelector('.dust-state');
+  if (state) state.textContent = on ? 'On' : 'Off';
+}
+
+document.querySelectorAll('.dust-card').forEach(card => {
+  card.addEventListener('click', async () => {
+    await startAudio();
+    const fx = card.dataset.fx;
+    dustState[fx] = !dustState[fx];
+    setDustCardUi(card, dustState[fx]);
+    applyDust();
+  });
+});
+
+document.getElementById('dustAuto').addEventListener('click', async () => {
+  await startAudio();
+  Object.keys(dustState).forEach(k => { dustState[k] = true; });
+  document.querySelectorAll('.dust-card').forEach(card => setDustCardUi(card, true));
+  applyDust();
+});
+
+document.getElementById('dustBypass').addEventListener('click', () => {
+  Object.keys(dustState).forEach(k => { dustState[k] = false; });
+  document.querySelectorAll('.dust-card').forEach(card => setDustCardUi(card, false));
+  applyDust();
+});
+
+// ============================================================
+//  STEP 7 — ATMOSPHERE (independent ambient sources)
+// ============================================================
+const atmosState = {
+  rain:  { on: false, level: 55 },
+  cafe:  { on: false, level: 45 },
+  birds: { on: false, level: 40 }
+};
+
+function levelToDb(level) {
+  // 0..100 -> -50..-6 dB. 0 returns SILENT_DB so we can ramp to it.
+  if (level <= 0) return SILENT_DB;
+  return -50 + (level / 100) * 44;
+}
+
+// Rain — pink noise, gentle highpass + lowpass for a soft hiss.
+const rainVol = new Tone.Volume(SILENT_DB).connect(masterCrush);
+const rainHp = new Tone.Filter({ frequency: 800, type: 'highpass', Q: 0.4 }).connect(rainVol);
+const rainLp = new Tone.Filter({ frequency: 7000, type: 'lowpass', Q: 0.4 }).connect(rainHp);
+const rainSrc = new Tone.Noise('pink').connect(rainLp);
+rainSrc.start();
+
+// Café murmur — pink noise, bandpass with slow LFO sweep, plus amplitude breathing.
+const cafeVol = new Tone.Volume(SILENT_DB).connect(masterCrush);
+const cafeBp = new Tone.Filter({ frequency: 950, type: 'bandpass', Q: 1.2 }).connect(cafeVol);
+const cafeFilterLfo = new Tone.LFO({ frequency: 0.25, min: 700, max: 1300 }).start();
+cafeFilterLfo.connect(cafeBp.frequency);
+const cafeGain = new Tone.Gain(0.7).connect(cafeBp);
+const cafeAmpLfo = new Tone.LFO({ frequency: 0.55, min: 0.4, max: 1.0 }).start();
+cafeAmpLfo.connect(cafeGain.gain);
+const cafeSrc = new Tone.Noise('pink').connect(cafeGain);
+cafeSrc.start();
+
+// Birds — random short chirps, fired by a setInterval (independent of Transport).
+const birdVol = new Tone.Volume(SILENT_DB).connect(masterCrush);
+const bird = new Tone.Synth({
+  oscillator: { type: 'sine' },
+  envelope: { attack: 0.008, decay: 0.07, sustain: 0, release: 0.05 }
+}).connect(birdVol);
+const BIRD_PITCHES = ['B5', 'C6', 'D6', 'E6', 'F#6', 'A6', 'C7'];
+let birdInterval = null;
+
+function chirp() {
+  const n = 1 + Math.floor(Math.random() * 4);
+  let t = Tone.now();
+  for (let i = 0; i < n; i++) {
+    bird.triggerAttackRelease(
+      BIRD_PITCHES[Math.floor(Math.random() * BIRD_PITCHES.length)],
+      0.05, t
+    );
+    t += 0.06 + Math.random() * 0.04;
+  }
+}
+function startBirdScheduler() {
+  if (birdInterval) return;
+  birdInterval = setInterval(() => {
+    if (atmosState.birds.on && Math.random() < 0.35) chirp();
+  }, 1300);
+}
+function stopBirdScheduler() {
+  if (birdInterval) { clearInterval(birdInterval); birdInterval = null; }
+}
+
+const ATMOS_VOL_NODES = { rain: rainVol, cafe: cafeVol, birds: birdVol };
+
+function applyAtmos(key) {
+  const s = atmosState[key];
+  const target = s.on ? levelToDb(s.level) : SILENT_DB;
+  const vol = ATMOS_VOL_NODES[key];
+  if (vol) vol.volume.rampTo(target, 0.4);
+  if (key === 'birds') s.on ? startBirdScheduler() : stopBirdScheduler();
+}
+
+document.querySelectorAll('.atmos-card').forEach(card => {
+  const key = card.dataset.amb;
+  const toggle = card.querySelector('.atmos-toggle');
+  const slider = card.querySelector('.atmos-vol input');
+
+  toggle.addEventListener('click', async () => {
+    await startAudio();
+    atmosState[key].on = !atmosState[key].on;
+    toggle.setAttribute('aria-pressed', atmosState[key].on ? 'true' : 'false');
+    toggle.textContent = atmosState[key].on ? 'On' : 'Off';
+    applyAtmos(key);
+  });
+
+  slider.addEventListener('input', e => {
+    atmosState[key].level = parseInt(e.target.value, 10);
+    applyAtmos(key);
+  });
+});
+
+// ============================================================
+//  MASTER CONTROLS — Stop All / Play All
+// ============================================================
+function stopAllLayers() {
+  // Stop in reverse so the Transport gets stopped exactly once at the end.
+  // Note: Step 1's metronome is intentionally NOT included — it has its own
+  // clock and is independent of the layer system.
+  stopMelodyLayer();
+  stopBassLayer();
+  stopChordLayer();
+  stopDrumLayer();
+}
+
+function playAllLayers() {
+  stopHeroIfPlaying();
+  // Start whichever layers have content but aren't already playing.
+  // Order doesn't matter — they all align to the next bar (or 0 for the first).
+  const drumHasContent = drumState.some(row => row.some(c => c));
+  const melodyHasContent = melodyState.some(row => row.some(c => c));
+  if (drumHasContent && !drumPlaying) startDrumLayer();
+  if (!chordPlaying) startChordLayer(); // chords always have a default progression
+  if (!bassPlaying) startBassLayer();   // bass follows the active progression
+  if (melodyHasContent && !melodyPlaying) startMelodyLayer();
+}
+
+// ============================================================
+//  MASTER PILL — floating Play All / Stop All control
+// ============================================================
+function updateMasterPill() {
+  const pill = document.getElementById('masterPill');
+  if (!pill) return;
+  const stopBtn = document.getElementById('masterStopAll');
+  const status = document.getElementById('masterStatus');
+  const anyPlaying = activeLayers.size > 0 || heroPlaying;
+  if (stopBtn) stopBtn.disabled = !anyPlaying;
+  if (status) {
+    if (heroPlaying) {
+      status.textContent = 'Demo playing';
+    } else if (activeLayers.size === 0) {
+      status.textContent = 'Nothing playing';
+    } else {
+      const labels = { drum: 'drums', chord: 'chords', bass: 'bass', melody: 'melody' };
+      const parts = [...activeLayers].map(k => labels[k] || k);
+      status.textContent = parts.join(' + ');
+    }
+  }
+}
+
+document.getElementById('masterPlayAll').addEventListener('click', async () => {
+  await startAudio();
+  playAllLayers();
+});
+document.getElementById('masterStopAll').addEventListener('click', () => {
+  if (heroPlaying) stopHeroLoop();
+  stopAllLayers();
+});
+
+// Master tempo slider — drives Tone.Transport (drums/chords/melody only).
+const masterTempo = document.getElementById('masterTempo');
+const masterBpmDisplay = document.getElementById('masterBpm');
+masterTempo.addEventListener('input', e => {
+  const bpm = Math.max(60, Math.min(100, parseInt(e.target.value) || 78));
+  masterBpmDisplay.textContent = bpm;
+  Tone.Transport.bpm.value = bpm;
+});
+// Initialize Transport BPM from the slider's default value
+Tone.Transport.bpm.value = parseInt(masterTempo.value);
+
+updateMasterPill();

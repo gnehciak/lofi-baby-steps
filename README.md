@@ -13,8 +13,8 @@ A single-page interactive guide that walks a Stage 4 student through composing t
 The four steps:
 
 1. **Vibe** — pick a mood and tempo.
-2. **Beat** — build a 16-step drum pattern in the in-browser drum machine.
-3. **Chords** — choose from four jazz progressions and hear them loop.
+2. **Chords** — choose from four jazz progressions and hear them loop.
+3. **Beat** — build a 16-step drum pattern in the in-browser drum machine.
 4. **Melody** — write a sequence on the pentatonic safe-note pad.
 
 The page also includes a collapsible **Teacher Notes & Rationale** section covering the compositional model, pedagogical decisions, differentiation strategy, and NESA Music 7–10 syllabus links.
