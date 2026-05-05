@@ -23,3 +23,5 @@ Icon?
 node_modules/
 dist/
 build/
+lofi-baby-steps.zip
+*.zip
